@@ -56,7 +56,7 @@ public class BookingController {
                 return ResponseEntity.badRequest().body(Map.of("error", "VALIDATION_ERROR", "message", "end must be after start"));
 
             // Availability check (includes TO_CONFIRM)
-            int available = availabilityService.availabilityForType(type, start, end, false);
+            int available = availabilityService.availabilityForType(type, start, end, true);
             if (available <= 0) {
                 log.warn("bookings.create.no_availability typeId={} start={} end={}", typeId, start, end);
                 return ResponseEntity.status(409).body(Map.of("error", "NO_AVAILABILITY", "message", "No cars available for the requested range"));

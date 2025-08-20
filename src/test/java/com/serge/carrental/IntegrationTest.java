@@ -7,6 +7,7 @@ import com.serge.carrental.domain.UserAccount;
 import com.serge.carrental.repo.UserAccountRepository;
 import com.serge.carrental.repo.VerificationTokenRepository;
 import com.serge.carrental.domain.VerificationToken;
+import io.micrometer.common.util.StringUtils;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -51,6 +52,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import java.util.concurrent.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -255,76 +258,7 @@ public class IntegrationTest {
         assertThat(s).containsKeys("available", "days", "estimatedTotal");
     }
 
-    // ======================================
-    // Auth flow: register -> verify -> book
-    // ======================================
-    /*@Test
-    void auth_registration_verification_and_booking() throws Exception {
-        String email = "reguser+" + UUID.randomUUID() + "@example.com";
 
-        // Register
-        logStep("Auth: register user");
-        HttpHeaders h = new HttpHeaders();
-        h.setContentType(MediaType.APPLICATION_JSON);
-        h.add("X-Base-Url", baseUrl()); // so the email contains a link pointing back here
-        Map<String, Object> regBody = Map.of(
-                "email", email,
-                "password", "s3cret!",
-                "firstName", "Reg",
-                "lastName", "User",
-                "phone", "123"
-        );
-        ResponseEntity<String> reg = rest.postForEntity(baseUrl()+"/api/auth/register",
-                new HttpEntity<>(om.writeValueAsString(regBody), h), String.class);
-        assertThat(reg.getStatusCode().value()).isEqualTo(201);
-        Map<String, Object> regResp = om.readValue(reg.getBody(), new TypeReference<>() {});
-        assertThat(regResp.get("status")).isEqualTo("PENDING_VERIFICATION");
-
-        // Grab token from DB and verify
-        logStep("Auth: verify user with token");
-        Optional<VerificationToken> tokenOpt = tokens.findAll().stream()
-                .filter(t -> t.getUser().getEmail().equals(email))
-                .findFirst();
-        assertThat(tokenOpt).isPresent();
-        String token = tokenOpt.get().getToken();
-        ResponseEntity<String> verify = rest.getForEntity(baseUrl()+"/api/auth/verify?token={t}", String.class, token);
-        assertThat(verify.getStatusCode().is2xxSuccessful()).isTrue();
-
-        // Book a car as verified user
-        logStep("Bookings: create by verified user");
-        String jwt = JwtTestUtil.minimalJwt(email, "bookings:write");
-        String from = OffsetDateTime.now(ZoneOffset.UTC).plusDays(3).withHour(10).withMinute(0).withSecond(0).withNano(0).toString();
-        String to   = OffsetDateTime.now(ZoneOffset.UTC).plusDays(5).withHour(10).withMinute(0).withSecond(0).withNano(0).toString();
-        HttpHeaders headers = new HttpHeaders();
-        headers.setBearerAuth(jwt);
-        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-        org.springframework.util.LinkedMultiValueMap<String, Object> body =
-                new org.springframework.util.LinkedMultiValueMap<>();
-        body.add("typeId", "SEDAN");
-        body.add("start", from);
-        body.add("end", to);
-        byte[] content = "fake image".getBytes(StandardCharsets.UTF_8);
-        body.add("driverLicense", new org.springframework.core.io.ByteArrayResource(content){
-            @Override public String getFilename(){ return "license.jpg"; }
-        });
-        ResponseEntity<String> create = rest.exchange(baseUrl()+"/api/bookings",
-                HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
-        assertThat(create.getStatusCode().value()).isEqualTo(201);
-        Map<String, Object> created = om.readValue(create.getBody(), new TypeReference<>() {});
-        assertThat(created.get("status")).isEqualTo("TO_CONFIRM");
-        assertThat(created).containsKeys("bookingId","typeId","days","estimatedTotal");
-
-        // Ensure confirmation email went out
-        logStep("Mail: booking confirmation email delivered via MailHog");
-        okhttp3.OkHttpClient http = new okhttp3.OkHttpClient();
-        String mailhogUrl = "http://"+mailhog.getHost()+":"+mailhog.getMappedPort(8025)+"/api/v2/messages";
-        okhttp3.Request req = new okhttp3.Request.Builder().url(mailhogUrl).build();
-        okhttp3.Response resp = http.newCall(req).execute();
-        assertThat(resp.isSuccessful()).isTrue();
-        String bodyStr = resp.body().string();
-        assertThat(bodyStr).contains("Booking received");
-    }
-*/
     // ===================================
     // Booking validation & auth scenarios
     // ===================================
@@ -398,118 +332,88 @@ public class IntegrationTest {
         assertThat(badCreate.getBody()).contains("VALIDATION_ERROR");
     }
 
-    // ==========================================
-    // Admin: confirm/reject + list + stats flow
-    // ==========================================
-   /* @Test
-    void admin_confirm_reject_list_and_stats() throws Exception {
-        // Prepare a verified user and two bookings (A to confirm, B to reject)
+    // ==========================================================
+    // Parallel drain scenario: exhaust availability in threads
+    // ==========================================================
+    @Test
+    void booking_parallel_drain_exhausts_availability() throws Exception {
+        String typeId = "SUV";
+        OffsetDateTime start = OffsetDateTime.now(ZoneOffset.UTC).plusDays(2).withHour(9).withMinute(0).withSecond(0).withNano(0);
+        OffsetDateTime end   = start.plusDays(2);
+        String from = start.toString();
+        String to   = end.toString();
+
+        // Prepare verified user
+        String email = ("drainuser+"+UUID.randomUUID()+"@example.com").toLowerCase();
         UserAccount u = new UserAccount();
-        u.setEmail("adminflow+"+UUID.randomUUID()+"@example.com");
+        u.setEmail(email);
         u.setPasswordHash("{noop}");
         u.setEmailVerified(true);
         u.setCreatedAt(OffsetDateTime.now(ZoneOffset.UTC));
         users.save(u);
+        String jwt = JwtTestUtil.minimalJwt(email, "bookings:write");
 
-        String jwtUser = JwtTestUtil.minimalJwt(u.getEmail(), "bookings:write");
-        String fromA = OffsetDateTime.now(ZoneOffset.UTC).plusDays(2).withHour(9).withMinute(0).withSecond(0).withNano(0).toString();
-        String toA   = OffsetDateTime.now(ZoneOffset.UTC).plusDays(3).withHour(9).withMinute(0).withSecond(0).withNano(0).toString();
-        String fromB = OffsetDateTime.now(ZoneOffset.UTC).plusDays(4).withHour(9).withMinute(0).withSecond(0).withNano(0).toString();
-        String toB   = OffsetDateTime.now(ZoneOffset.UTC).plusDays(5).withHour(9).withMinute(0).withSecond(0).withNano(0).toString();
+        // Check initial availability
+        ResponseEntity<String> td = rest.getForEntity(
+                baseUrl()+"/api/cars/types/{id}?from={f}&to={t}", String.class, typeId, from, to);
+        Map<String,Object> tdJson = om.readValue(td.getBody(), new TypeReference<>(){});
+        int initialAvail = (Integer) tdJson.get("available");
+        System.out.println("Initial availability for " + typeId + ":" + initialAvail);
+        assertThat(initialAvail).isGreaterThan(0);
 
-        HttpHeaders hUser = new HttpHeaders();
-        hUser.setBearerAuth(jwtUser);
-        hUser.setContentType(MediaType.MULTIPART_FORM_DATA);
+        ExecutorService pool = Executors.newFixedThreadPool(Math.max(2, initialAvail));
+        java.util.List<Callable<Boolean>> tasks = new java.util.ArrayList<>();
 
-        org.springframework.util.LinkedMultiValueMap<String, Object> bodyA = new org.springframework.util.LinkedMultiValueMap<>();
-        bodyA.add("typeId", "SEDAN");
-        bodyA.add("start", fromA);
-        bodyA.add("end", toA);
-        bodyA.add("driverLicense", new org.springframework.core.io.ByteArrayResource("img".getBytes(StandardCharsets.UTF_8)){
-            @Override public String getFilename(){ return "license.jpg"; }
-        });
-        ResponseEntity<String> createA = rest.exchange(baseUrl()+"/api/bookings", HttpMethod.POST,
-                new HttpEntity<>(bodyA, hUser), String.class);
-        assertThat(createA.getStatusCode().value()).isEqualTo(201);
-        Map<String, Object> createdA = om.readValue(createA.getBody(), new TypeReference<>() {});
-        String bookingIdA = (String) createdA.get("bookingId");
+        for (int i = 0; i < initialAvail + 12; i++) {
+            final int idx = i;
+            tasks.add(() -> {
+                HttpHeaders h = new HttpHeaders();
+                h.setBearerAuth(jwt);
+                h.setContentType(MediaType.MULTIPART_FORM_DATA);
+                LinkedMultiValueMap<String,Object> body = new LinkedMultiValueMap<>();
+                body.add("typeId", typeId);
+                body.add("start", from);
+                body.add("end", to);
+                body.add("driverLicense", new org.springframework.core.io.ByteArrayResource(("img"+idx).getBytes()){
+                    @Override public String getFilename(){ return "l.jpg"; }
+                });
+                ResponseEntity<String> resp = rest.exchange(
+                        baseUrl()+"/api/bookings",
+                        HttpMethod.POST,
+                        new HttpEntity<>(body, h),
+                        String.class);
+                Map<String,Object> afterJson = om.readValue(resp.getBody(), new TypeReference<>(){});
+                if (resp.getStatusCode().value() == 201){
+                    System.out.println("Booked " + afterJson.get("bookingId"));
+                } else {
+                    System.out.println("Booking rejected");
+                }
 
-        org.springframework.util.LinkedMultiValueMap<String, Object> bodyB = new org.springframework.util.LinkedMultiValueMap<>();
-        bodyB.add("typeId", "SEDAN");
-        bodyB.add("start", fromB);
-        bodyB.add("end", toB);
-        bodyB.add("driverLicense", new org.springframework.core.io.ByteArrayResource("img".getBytes(StandardCharsets.UTF_8)){
-            @Override public String getFilename(){ return "license.jpg"; }
-        });
-        ResponseEntity<String> createB = rest.exchange(baseUrl()+"/api/bookings", HttpMethod.POST,
-                new HttpEntity<>(bodyB, hUser), String.class);
-        assertThat(createB.getStatusCode().value()).isEqualTo(201);
-        Map<String, Object> createdB = om.readValue(createB.getBody(), new TypeReference<>() {});
-        String bookingIdB = (String) createdB.get("bookingId");
+                return resp.getStatusCode().value() == 201;
+            });
+        }
 
-        // Admin tokens & headers
-        String jwtAdmin = JwtTestUtil.minimalJwt("admin@example.com", "admin:write");
-        HttpHeaders hAdminJson = new HttpHeaders();
-        hAdminJson.setBearerAuth(jwtAdmin);
-        hAdminJson.setContentType(MediaType.APPLICATION_JSON);
+        java.util.List<Future<Boolean>> results = pool.invokeAll(tasks);
+        pool.shutdown();
+        pool.awaitTermination(600, TimeUnit.SECONDS);
 
-        // Confirm A
-        logStep("Admin: confirm booking A");
-        Map<String, Object> confirmBody = Map.of("carRegistrationNumber", "XYZ-1234");
-        ResponseEntity<String> confirm = rest.exchange(
-                baseUrl()+"/api/admin/bookings/{id}/confirm",
-                HttpMethod.POST, new HttpEntity<>(om.writeValueAsString(confirmBody), hAdminJson),
-                String.class, bookingIdA);
-        assertThat(confirm.getStatusCode().is2xxSuccessful()).isTrue();
-        Map<String, Object> c = om.readValue(confirm.getBody(), new TypeReference<>() {});
-        assertThat(c.get("status")).isIn("BOOKED", "OCCUPIED");
-        assertThat(c.get("carRegistrationNumber")).isEqualTo("XYZ-1234");
+        long successes = results.stream().filter(f -> {
+            try { return f.get(); } catch (Exception e)
+            {
+                e.printStackTrace();
+                return false;
+            }
+        }).count();
 
-        // Reject B
-        logStep("Admin: reject booking B");
-        ResponseEntity<String> reject = rest.exchange(
-                baseUrl()+"/api/admin/bookings/{id}/reject",
-                HttpMethod.POST, new HttpEntity<>(null, hAdminJson),
-                String.class, bookingIdB);
-        assertThat(reject.getStatusCode().is2xxSuccessful()).isTrue();
-        Map<String, Object> r = om.readValue(reject.getBody(), new TypeReference<>() {});
-        assertThat(r.get("status")).isEqualTo("REJECTED");
+        assertThat(successes).isEqualTo(initialAvail);
 
-        // List bookings
-        logStep("Admin: list bookings in window");
-        String listFrom = OffsetDateTime.now(ZoneOffset.UTC).plusDays(1).withHour(0).withMinute(0).withSecond(0).withNano(0).toString();
-        String listTo   = OffsetDateTime.now(ZoneOffset.UTC).plusDays(6).withHour(23).withMinute(59).withSecond(0).withNano(0).toString();
-        HttpHeaders hAdmin = new HttpHeaders();
-        hAdmin.setBearerAuth(jwtAdmin);
-        ResponseEntity<String> list = rest.exchange(
-                baseUrl()+"/api/admin/bookings?from={f}&to={t}",
-                HttpMethod.GET, new HttpEntity<>(hAdmin), String.class, listFrom, listTo);
-        assertThat(list.getStatusCode().is2xxSuccessful()).isTrue();
-        List<Map<String, Object>> items = om.readValue(list.getBody(), new TypeReference<>() {});
-        assertThat(items.stream().anyMatch(m -> bookingIdA.equals(String.valueOf(m.get("bookingId"))))).isTrue();
-        assertThat(items.stream().anyMatch(m -> bookingIdB.equals(String.valueOf(m.get("bookingId"))))).isTrue();
-
-        // Stats
-        logStep("Admin: utilization stats");
-        ResponseEntity<String> stats = rest.exchange(
-                baseUrl()+"/api/admin/stats?from={f}&to={t}",
-                HttpMethod.GET, new HttpEntity<>(hAdmin), String.class, listFrom, listTo);
-        assertThat(stats.getStatusCode().is2xxSuccessful()).isTrue();
-        List<Map<String, Object>> st = om.readValue(stats.getBody(), new TypeReference<>() {});
-        assertThat(st).isNotEmpty();
-
-        // User cancels confirmed booking (A) -> CANCELLED
-        logStep("Bookings: user cancels booking A");
-        HttpHeaders hUserAuth = new HttpHeaders();
-        hUserAuth.setBearerAuth(jwtUser);
-        ResponseEntity<String> cancel = rest.exchange(
-                baseUrl()+"/api/bookings/{id}/cancel",
-                HttpMethod.POST, new HttpEntity<>(hUserAuth), String.class, bookingIdA);
-        assertThat(cancel.getStatusCode().is2xxSuccessful()).isTrue();
-        Map<String, Object> cancelResp = om.readValue(cancel.getBody(), new TypeReference<>() {});
-        assertThat(cancelResp.get("status")).isEqualTo("CANCELLED");
+        // After drain, availability should be 0
+        ResponseEntity<String> afterTd = rest.getForEntity(
+                baseUrl()+"/api/cars/types/{id}?from={f}&to={t}", String.class, typeId, from, to);
+        Map<String,Object> afterJson = om.readValue(afterTd.getBody(), new TypeReference<>(){});
+        assertThat((Integer) afterJson.get("available")).isEqualTo(0);
     }
-*/
+
     // =========================================================================
     // Parameterized end-to-end flow with varied inputs (Cucumber-style table)
     // =========================================================================
@@ -556,15 +460,21 @@ public class IntegrationTest {
         String from = startTs.toString();
         String to   = endTs.toString();
 
-        // 4) Public: search and type detail (sanity)
+        // 4) Public: search and type detail (sanity) + JSON validation
         ResponseEntity<String> search = rest.getForEntity(
                 baseUrl()+"/api/cars/search?from={f}&to={t}", String.class, from, to);
         assertThat(search.getStatusCode().is2xxSuccessful()).isTrue();
+        List<Map<String,Object>> availList = om.readValue(search.getBody(), new TypeReference<>(){});
+        assertThat(availList).anyMatch(m -> sc.typeId.equals(m.get("typeId")));
 
         ResponseEntity<String> typeDetail = rest.getForEntity(
                 baseUrl()+"/api/cars/types/{id}?from={f}&to={t}",
                 String.class, sc.typeId, from, to);
         assertThat(typeDetail.getStatusCode().is2xxSuccessful()).isTrue();
+        Map<String,Object> detailJson = om.readValue(typeDetail.getBody(), new TypeReference<>(){});
+        assertThat(detailJson.get("typeId")).isEqualTo(sc.typeId);
+        assertThat(detailJson).containsKeys("available","days","estimatedTotal");
+        int initialAvail = (Integer) detailJson.get("available");
 
         // 5) Try to create a booking
         HttpHeaders headers = new HttpHeaders();
@@ -592,18 +502,28 @@ public class IntegrationTest {
             assertThat(created.get("status")).isEqualTo("TO_CONFIRM");
             assertThat(created.get("days")).isEqualTo(sc.durationDays);
 
-            // Fetch it back via GET
-            HttpHeaders bookingRQHeaders = new HttpHeaders();
-            headers.setBearerAuth(jwt);
+            // After booking: availability should reduce by 1
+            ResponseEntity<String> afterTypeDetail = rest.getForEntity(
+                    baseUrl()+"/api/cars/types/{id}?from={f}&to={t}",
+                    String.class, sc.typeId, from, to);
+            Map<String,Object> afterJson = om.readValue(afterTypeDetail.getBody(), new TypeReference<>(){});
+            int afterAvail = (Integer) afterJson.get("available");
+            assertThat(afterAvail).isEqualTo(initialAvail - 1);
 
+            // Fetch it back via GET and validate JSON
+            HttpHeaders getH = new HttpHeaders();
+            getH.setBearerAuth(jwt);
             ResponseEntity<String> getResp = rest.exchange(
                     baseUrl()+"/api/bookings/{id}",
                     HttpMethod.GET,
-                    new HttpEntity<>(headers),
+                    new HttpEntity<>(getH),
                     String.class,
                     bookingId);
-
             assertThat(getResp.getStatusCode().is2xxSuccessful()).isTrue();
+            Map<String,Object> getJson = om.readValue(getResp.getBody(), new TypeReference<>(){});
+            assertThat(getJson.get("bookingId")).isEqualTo(bookingId);
+            assertThat(getJson.get("typeId")).isEqualTo(sc.typeId);
+            assertThat(getJson).containsKeys("start","end","days","estimatedTotal","createdAt");
 
             // Clean up: cancel to reduce interference between scenarios
             HttpHeaders cancelH = new HttpHeaders();

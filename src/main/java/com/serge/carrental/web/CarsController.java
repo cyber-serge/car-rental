@@ -57,7 +57,7 @@ public class CarsController {
             @PathVariable String typeId,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
-            @RequestParam(defaultValue = "false") boolean bypassCache
+            @RequestParam(defaultValue = "true") boolean bypassCache
     ) {
         log.info("cars.typeDetail typeId={} from={} to={} bypassCache={}", typeId, from, to, bypassCache);
         CarType ct = carTypeRepository.findById(typeId).orElseThrow(() -> new NoSuchElementException("No such car type"));
