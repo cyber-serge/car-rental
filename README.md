@@ -1,6 +1,6 @@
-# Car Rental (Monolith, Spring Boot)
+# Car Rental (Spring Boot)
 
-Monolithic REST application implementing a car rental system with inventory by **car type** (Sedan, SUV, Van).
+REST application implementing a car rental system with inventory by **car type** (Sedan, SUV, Van).
 
 ## Tech
 - Java 21, Spring Boot 3.3.x
@@ -8,6 +8,7 @@ Monolithic REST application implementing a car rental system with inventory by *
 - PostgreSQL + Flyway
 - Redis cache (availability)
 - Amazon S3 (via MinIO locally) for license uploads
+- Hypersistence Utils (PostgreSQL `tsrange` + `jsonb` mappings)
 - Mail (MailHog)
 - Docker & Testcontainers
 
@@ -26,20 +27,18 @@ Services:
 Flyway seeds car types (SEDAN, SUV, VAN).
 
 ### OAuth clients
-- `car-rental-admin` (client_credentials)
+- `car-rental-admin`, `car-rental-public` (client_credentials)
   - token endpoint: `POST /oauth2/token`
   - client secret: `admin-secret`
   - scope: `admin:write`
-- `car-rental-public` (authorization_code)
-  - redirect: `http://localhost:8080/authorized`
-  - scope: `bookings:write openid profile`
 
 ## REST (selected)
 
 ### Public
 - `GET /api/cars/types`
+- `GET /api/cars/types/{typeId}`
 - `GET /api/cars/search?from=ISO&to=ISO`
-- `GET /api/cars/types/{typeId}?from=ISO&to=ISO&bypassCache=true|false`
+- `GET /api/cars/types/{typeId}?from=ISO&to=ISO`
 
 ### Auth
 - `POST /api/auth/register`
