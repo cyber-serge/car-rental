@@ -1,0 +1,53 @@
+spring:
+  application:
+    name: car-rental
+  datasource:
+    url: jdbc:postgresql://localhost:5433/car_rental
+    username: nopass
+    password: nopass
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+      hypersistence.utils.enable_types_contributor: false
+    open-in-view: false
+  flyway:
+    locations: classpath:db/migration
+  mail:
+    host: localhost
+    port: 1025
+    properties:
+      mail:
+        smtp:
+          auth: false
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+server:
+  port: 8080
+logging:
+  level:
+    root: INFO
+    com.serge.carrental.config.logging.HttpLoggingFilter: DEBUG
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+  data:
+    redis:
+      host: ${SPRING_REDIS_HOST}
+      port: ${SPRING_REDIS_PORT}
+  mail:
+    host: ${SPRING_MAIL_HOST}
+    port: ${SPRING_MAIL_PORT}
+
+
