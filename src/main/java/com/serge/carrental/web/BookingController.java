@@ -1,5 +1,6 @@
 package com.serge.carrental.web;
 
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.serge.carrental.domain.*;
@@ -55,12 +56,7 @@ public class BookingController {
             if (!end.isAfter(start))
                 return ResponseEntity.badRequest().body(Map.of("error", "VALIDATION_ERROR", "message", "end must be after start"));
 
-            // Availability check (includes TO_CONFIRM)
-            int available = availabilityService.availabilityForType(type, start, end, true);
-            if (available <= 0) {
-                log.warn("bookings.create.no_availability typeId={} start={} end={}", typeId, start, end);
-                return ResponseEntity.status(409).body(Map.of("error", "NO_AVAILABILITY", "message", "No cars available for the requested range"));
-            }
+
 
             // Upload license
             String licenseKey = storageService.uploadLicense(driverLicense.getBytes(), driverLicense.getOriginalFilename(), driverLicense.getContentType());
@@ -76,25 +72,32 @@ public class BookingController {
 
             int days = AvailabilityService.daysBetweenCeil(start, end);
             BigDecimal total = type.getPricePerDay().multiply(BigDecimal.valueOf(days));
+            OffsetDateTime nowUtc = OffsetDateTime.now(ZoneOffset.UTC);
+            UUID id = UUID.randomUUID();
+            // Active statuses aligned with AvailabilityService
+            List<String> active = List.of("TO_CONFIRM","BOOKED","OCCUPIED");
 
-            Booking b = Booking.builder()
-                    .user(user)
-                    .carType(type)
-                    .status(BookingStatus.TO_CONFIRM)
-                    // Convert to LocalDateTime for PostgreSQL tsrange
-                    .timeRange(Range.closedOpen(start.toLocalDateTime(), end.toLocalDateTime()))
-                    .startTs(start)
-                    .endTs(end)
-                    .days(days)
-                    .pricePerDay(type.getPricePerDay())
-                    .total(total)
-                    .licenseKey(licenseKey)
-                    .createdAt(OffsetDateTime.now(ZoneOffset.UTC))
-                    .updatedAt(OffsetDateTime.now(ZoneOffset.UTC))
-                    .build();
-            bookingRepository.save(b);
+            int rows = bookingRepository.tryInsertBooking(
+                    id,
+                    user.getId(),
+                    type.getId(),
+                    BookingStatus.TO_CONFIRM.name(),
+                    start, end,
+                    days,
+                    type.getPricePerDay(),
+                    total,
+                    licenseKey,
+                    nowUtc, nowUtc,
+                    active
+            );
+            if (rows == 0) {
+                log.warn("bookings.create.no_availability (atomic) typeId={} start={} end={}", typeId, start, end);
+                return ResponseEntity.status(409).body(Map.of("error", "NO_AVAILABILITY", "message", "No cars available for the requested range"));
+            }
+
+            // Fetch inserted row to build the response (and for logging)
+            Booking b = bookingRepository.findById(id).orElseThrow(() -> new IllegalStateException("Inserted booking not found"));
             log.info("bookings.create.saved bookingId={} status={}", b.getId(), b.getStatus());
-
             // Send email (booking received)
             emailService.send(user.getEmail(), "Booking received (To Confirm)",
                     "<p>We received your booking for type <b>" + type.getDisplayName() + "</b></p>" +

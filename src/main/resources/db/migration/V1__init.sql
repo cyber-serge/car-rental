@@ -65,6 +65,6 @@ CREATE TABLE idempotency_keys (
 INSERT INTO car_types (id, display_name, description, price_per_day, currency, total_quantity, photo_url, metadata)
 VALUES
 ('SEDAN','Sedan','Comfortable sedan', 50.00, 'USD', 10, 'https://example.com/sedan.jpg', '{"seats":5,"transmission":"AUTO"}'::jsonb),
-('SUV','SUV','Spacious SUV', 80.00, 'USD', 6, 'https://example.com/suv.jpg', '{"seats":7,"transmission":"AUTO"}'::jsonb),
+('SUV','SUV','Spacious SUV', 80.00, 'USD', 600, 'https://example.com/suv.jpg', '{"seats":7,"transmission":"AUTO"}'::jsonb),
 ('VAN','Van','Large van', 100.00, 'USD', 4, 'https://example.com/van.jpg', '{"seats":9,"transmission":"MANUAL"}'::jsonb);
 

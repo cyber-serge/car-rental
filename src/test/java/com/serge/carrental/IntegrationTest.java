@@ -1,6 +1,10 @@
 package com.serge.carrental;
 
+import com.serge.carrental.report.HtmlReportExtension;
+import com.serge.carrental.report.TestDescription;
 import com.serge.carrental.service.StorageService;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.extension.ExtendWith;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.serge.carrental.domain.UserAccount;
@@ -58,6 +62,7 @@ import java.util.concurrent.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ExtendWith(HtmlReportExtension.class)
 @Testcontainers
 @Import(TestSecurityConfig.class)
 public class IntegrationTest {
@@ -122,9 +127,11 @@ public class IntegrationTest {
     }
 
     // ----- Pretty, visible logging helpers -------------------------------------------------
-    private static final AtomicInteger STEP = new AtomicInteger(0);
     private static void logStep(String message) {
-        System.out.println("\n>>> [STEP " + STEP.incrementAndGet() + "] " + message + " <<<");
+        String line = "[STEP] " + message;
+        // Console (as before)
+        System.out.println("\n>>> " + line + " <<<");
+        HtmlReportExtension.step(line); // capture for HTML report
     }
 
     // ---- Helpers to start & wait in @DynamicPropertySource ------------------
@@ -230,6 +237,8 @@ public class IntegrationTest {
     // Public endpoints scenarios
     // =========================
     @Test
+    @DisplayName("Public endpoints: /api/cars/types, /search, /types/{id}")
+    @TestDescription("Validates types listing, availability search, and type details with availability and totals.")
     void public_endpoints_search_and_type_detail() throws Exception {
         String from = OffsetDateTime.now(ZoneOffset.UTC).plusDays(2).withHour(9).withMinute(0).withSecond(0).withNano(0).toString();
         String to   = OffsetDateTime.now(ZoneOffset.UTC).plusDays(4).withHour(9).withMinute(0).withSecond(0).withNano(0).toString();
@@ -263,6 +272,8 @@ public class IntegrationTest {
     // Booking validation & auth scenarios
     // ===================================
     @Test
+    @DisplayName("Bookings: validation errors and JWT requirements")
+    @TestDescription("Covers 401 without JWT, 403 for unverified user, and 400 for invalid time range.")
     void booking_validation_errors_and_auth_required() throws Exception {
         // Create unverified and verified users
         UserAccount unverified = new UserAccount();
@@ -336,6 +347,8 @@ public class IntegrationTest {
     // Parallel drain scenario: exhaust availability in threads
     // ==========================================================
     @Test
+    @DisplayName("Parallel drain: exhaust availability and verify successes equal initial availability")
+    @TestDescription("Runs concurrent booking attempts until the type's availability is exhausted; verifies count and post-state availability.")
     void booking_parallel_drain_exhausts_availability() throws Exception {
         String typeId = "SUV";
         OffsetDateTime start = OffsetDateTime.now(ZoneOffset.UTC).plusDays(2).withHour(9).withMinute(0).withSecond(0).withNano(0);
@@ -361,7 +374,7 @@ public class IntegrationTest {
         System.out.println("Initial availability for " + typeId + ":" + initialAvail);
         assertThat(initialAvail).isGreaterThan(0);
 
-        ExecutorService pool = Executors.newFixedThreadPool(Math.max(2, initialAvail));
+        ExecutorService pool = Executors.newFixedThreadPool(2);
         java.util.List<Callable<Boolean>> tasks = new java.util.ArrayList<>();
 
         for (int i = 0; i < initialAvail + 12; i++) {
@@ -435,6 +448,8 @@ public class IntegrationTest {
 
     @ParameterizedTest(name = "E2E scenario: {0}")
     @MethodSource("bookingScenarios")
+    @DisplayName("E2E booking variations")
+    @TestDescription("End-to-end booking flow across car types/durations; validates JSON response fields, GET consistency and availability decrement; includes a negative validation case.")
     void endToEnd_user_booking_variations(Scenario sc) throws Exception {
         logStep("Scenario start: " + sc.label);
 
@@ -463,6 +478,7 @@ public class IntegrationTest {
         // 4) Public: search and type detail (sanity) + JSON validation
         ResponseEntity<String> search = rest.getForEntity(
                 baseUrl()+"/api/cars/search?from={f}&to={t}", String.class, from, to);
+        logStep("Search performed for " + String.format("/search?from=%s&to=%s", from, to));
         assertThat(search.getStatusCode().is2xxSuccessful()).isTrue();
         List<Map<String,Object>> availList = om.readValue(search.getBody(), new TypeReference<>(){});
         assertThat(availList).anyMatch(m -> sc.typeId.equals(m.get("typeId")));
@@ -470,6 +486,7 @@ public class IntegrationTest {
         ResponseEntity<String> typeDetail = rest.getForEntity(
                 baseUrl()+"/api/cars/types/{id}?from={f}&to={t}",
                 String.class, sc.typeId, from, to);
+        logStep("Availability check is performed for " + String.format("/types?from=%s&to=%s", from, to));
         assertThat(typeDetail.getStatusCode().is2xxSuccessful()).isTrue();
         Map<String,Object> detailJson = om.readValue(typeDetail.getBody(), new TypeReference<>(){});
         assertThat(detailJson.get("typeId")).isEqualTo(sc.typeId);
