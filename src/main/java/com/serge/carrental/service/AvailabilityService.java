@@ -30,12 +30,47 @@ public class AvailabilityService {
         return "avail:%s:%d:%d".formatted(typeId, from.toInstant().toEpochMilli(), to.toInstant().toEpochMilli());
     }
 
+    private String keyAll(OffsetDateTime from, OffsetDateTime to) {
+        return "availAll:%d:%d".formatted(from.toInstant().toEpochMilli(), to.toInstant().toEpochMilli());
+    }
+
     @Transactional(readOnly = true)
     public Map<String, Integer> availabilityAll(OffsetDateTime from, OffsetDateTime to) {
         log.debug("availability.all from={} to={}", from, to);
+        String cacheKey = keyAll(from, to);
+
+        // 1) Try bulk cache (Redis HASH: typeId -> available)
+        try {
+            Map<Object, Object> cached = redis.opsForHash().entries(cacheKey);
+            if (cached != null && !cached.isEmpty()) {
+                Map<String, Integer> hit = new LinkedHashMap<>();
+                for (Map.Entry<Object, Object> e : cached.entrySet()) {
+                    hit.put(String.valueOf(e.getKey()), Integer.parseInt(String.valueOf(e.getValue())));
+                }
+                log.trace("availability.all.cache.hit key={} size={}", cacheKey, hit.size());
+                return hit;
+            }
+        } catch (Exception e) {
+            log.warn("availability.all.cache.read_failed key={} err={}", cacheKey, e.toString());
+        }
+
+        // 2) Cache miss: compute using per-type (which itself caches per-type keys)
         Map<String, Integer> result = new LinkedHashMap<>();
         for (CarType ct : carTypeRepository.findAll()) {
             result.put(ct.getId(), availabilityForType(ct, from, to, false));
+        }
+
+        // 3) Write bulk cache (best effort) with TTL
+        try {
+            Map<String, String> toCache = new HashMap<>();
+            result.forEach((k, v) -> toCache.put(k, String.valueOf(v)));
+            if (!toCache.isEmpty()) {
+                redis.opsForHash().putAll(cacheKey, toCache);
+                redis.expire(cacheKey, TTL);
+            }
+            log.trace("availability.all.cache.write key={} size={}", cacheKey, result.size());
+        } catch (Exception e) {
+            log.warn("availability.all.cache.write_failed key={} err={}", cacheKey, e.toString());
         }
         return result;
     }

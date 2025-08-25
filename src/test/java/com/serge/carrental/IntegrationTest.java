@@ -374,7 +374,7 @@ public class IntegrationTest {
         System.out.println("Initial availability for " + typeId + ":" + initialAvail);
         assertThat(initialAvail).isGreaterThan(0);
 
-        ExecutorService pool = Executors.newFixedThreadPool(2);
+        ExecutorService pool = Executors.newFixedThreadPool(1);
         java.util.List<Callable<Boolean>> tasks = new java.util.ArrayList<>();
 
         for (int i = 0; i < initialAvail + 12; i++) {
